@@ -156,15 +156,13 @@ public:
         py::array_t<double, py::array::c_style | py::array::forcecast> vz,
         py::array_t<double, py::array::c_style | py::array::forcecast> vy,
         py::array_t<double, py::array::c_style | py::array::forcecast> vx) {
-
-        auto bz = vz.request();
-        auto by = vy.request();
-        auto bx = vx.request();
-
+        auto size_z = vz.size();
+        auto size_y = vy.size();
+        auto size_x = vx.size();
         const auto t0 = Clock::now();
-        copy_array(bz, fCDFZ);
-        copy_array(by, fCDFY);
-        copy_array(bx, fCDFX);
+        fCDFZ.assign(vz.data(), vz.data() + size_z);
+        fCDFY.assign(vy.data(), vy.data() + size_y);
+        fCDFX.assign(vx.data(), vx.data() + size_x);
         const auto t1 = Clock::now();
         last_copy_ns_ = elapsed_ns(t0, t1);
     }

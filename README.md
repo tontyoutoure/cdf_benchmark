@@ -11,6 +11,13 @@ uv run python benchmark.py NX NY NZ COPIES --repeats 5 --seed 12345
 ```
 Alternatively, run `python -m pip install -e .`, then invoke `python benchmark.py` with the same arguments.
 
+## Standalone C++ benchmark
+
+`cdf_nested.cpp` generates a reproducible random float64 array of the requested
+3D size, builds both flat and nested CDF representations, and compares their
+construction time, sampling performance, and memory usage. It does not require
+an input file and accepts `NX NY NZ NUM_SAMPLES [REPEATS]` as arguments.
+
 ## Results
 
 - `nested STL caster`: pybind11 recursively converts Python objects to `VD/VD2/VD3`.

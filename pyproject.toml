@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "pybind11>=2.11"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pybind-cdf-benchmark"
+version = "0.1.0"
+description = "Benchmark pybind11 conversion/copy cost for nested vs flat voxel CDFs"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.23"]
+
+[tool.setuptools]
+packages = ["cdfbench"]
+

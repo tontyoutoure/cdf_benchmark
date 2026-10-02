@@ -51,6 +51,79 @@ private:
     std::uint64_t last_copy_ns_ = 0;
 };
 
+template <typename T>
+class NestedNumpyHolder {
+public:
+    // Convert contiguous NumPy arrays with shapes [Z], [Z,Y], [Z,Y,X]
+    // directly into VD/VD2/VD3.  The outer vectors are resized and every
+    // innermost vector is populated with vector::assign.
+    void set_cdf(
+        py::array_t<T, py::array::c_style> vz,
+        py::array_t<T, py::array::c_style> vy,
+        py::array_t<T, py::array::c_style> vx) {
+
+        const auto bz = vz.request();
+        const auto by = vy.request();
+        const auto bx = vx.request();
+        validate_shapes(bz, by, bx);
+
+        const auto nz = static_cast<std::size_t>(bz.shape[0]);
+        const auto ny = static_cast<std::size_t>(by.shape[1]);
+        const auto nx = static_cast<std::size_t>(bx.shape[2]);
+        const auto* pz = static_cast<const T*>(bz.ptr);
+        const auto* py_data = static_cast<const T*>(by.ptr);
+        const auto* px = static_cast<const T*>(bx.ptr);
+
+        const auto t0 = Clock::now();
+        fCDFZ.assign(pz, pz + nz);
+
+        fCDFY.resize(nz);
+        for (std::size_t z = 0; z < nz; ++z) {
+            const T* row = py_data + z * ny;
+            fCDFY[z].assign(row, row + ny);
+        }
+
+        fCDFX.resize(nz);
+        for (std::size_t z = 0; z < nz; ++z) {
+            fCDFX[z].resize(ny);
+            for (std::size_t y = 0; y < ny; ++y) {
+                const T* row = px + (z * ny + y) * nx;
+                fCDFX[z][y].assign(row, row + nx);
+            }
+        }
+        const auto t1 = Clock::now();
+        last_copy_ns_ = elapsed_ns(t0, t1);
+    }
+
+    std::uint64_t last_copy_ns() const { return last_copy_ns_; }
+
+    std::size_t payload_elements() const {
+        std::size_t n = fCDFZ.size();
+        for (const auto& v : fCDFY) n += v.size();
+        for (const auto& vv : fCDFX)
+            for (const auto& v : vv) n += v.size();
+        return n;
+    }
+
+private:
+    static void validate_shapes(
+        const py::buffer_info& bz,
+        const py::buffer_info& by,
+        const py::buffer_info& bx) {
+        if (bz.ndim != 1 || by.ndim != 2 || bx.ndim != 3)
+            throw std::runtime_error(
+                "Expected CDF shapes [Z], [Z,Y], and [Z,Y,X]");
+        if (by.shape[0] != bz.shape[0] ||
+            bx.shape[0] != bz.shape[0] || bx.shape[1] != by.shape[1])
+            throw std::runtime_error("CDF array dimensions do not match");
+    }
+
+    VD3 fCDFX;
+    VD2 fCDFY;
+    VD fCDFZ;
+    std::uint64_t last_copy_ns_ = 0;
+};
+
 class FlatSTLHolder {
 public:
     // Flat std::vector parameters: pybind11 still converts Python iterables
@@ -129,6 +202,28 @@ PYBIND11_MODULE(_native, m) {
         .def_property_readonly("last_copy_ns", &NestedCDFHolder::last_copy_ns)
         .def_property_readonly("payload_elements", &NestedCDFHolder::payload_elements);
 
+    py::class_<NestedNumpyHolder<float>>(m, "NestedNumpyF32Holder")
+        .def(py::init<>())
+        .def("set_cdf", &NestedNumpyHolder<float>::set_cdf,
+             py::arg("vz").noconvert(),
+             py::arg("vy").noconvert(),
+             py::arg("vx").noconvert())
+        .def_property_readonly(
+            "last_copy_ns", &NestedNumpyHolder<float>::last_copy_ns)
+        .def_property_readonly(
+            "payload_elements", &NestedNumpyHolder<float>::payload_elements);
+
+    py::class_<NestedNumpyHolder<double>>(m, "NestedNumpyF64Holder")
+        .def(py::init<>())
+        .def("set_cdf", &NestedNumpyHolder<double>::set_cdf,
+             py::arg("vz").noconvert(),
+             py::arg("vy").noconvert(),
+             py::arg("vx").noconvert())
+        .def_property_readonly(
+            "last_copy_ns", &NestedNumpyHolder<double>::last_copy_ns)
+        .def_property_readonly(
+            "payload_elements", &NestedNumpyHolder<double>::payload_elements);
+
     py::class_<FlatSTLHolder>(m, "FlatSTLHolder")
         .def(py::init<>())
         .def("set_cdf", &FlatSTLHolder::set_cdf,
@@ -143,4 +238,3 @@ PYBIND11_MODULE(_native, m) {
         .def_property_readonly("last_copy_ns", &FlatNumpyHolder::last_copy_ns)
         .def_property_readonly("payload_elements", &FlatNumpyHolder::payload_elements);
 }
-

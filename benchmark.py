@@ -6,7 +6,12 @@ import time
 
 import numpy as np
 
-from cdfbench import NestedCDFHolder, FlatSTLHolder, FlatNumpyHolder
+from cdfbench import (
+    FlatNumpyHolder,
+    NestedCDFHolder,
+    NestedNumpyF32Holder,
+    NestedNumpyF64Holder,
+)
 
 
 def compute_image_3D_CDF(array):
@@ -37,13 +42,12 @@ def compute_image_3D_CDF(array):
     return cdf_x, cdf_y, cdf_z
 
 
-def to_flat_arrays(cdf_x, cdf_y, cdf_z):
-    # These conversions are intentionally timed separately.  In a redesigned
-    # implementation you would ideally generate these arrays flat from the start.
+def to_flat_arrays(cdf_x, cdf_y, cdf_z, dtype=None):
+    """Flatten CDFs, optionally converting and storing them in a new dtype."""
     t0 = time.perf_counter_ns()
-    x = np.ascontiguousarray(np.asarray(cdf_x, dtype=np.float64)).reshape(-1)
-    y = np.ascontiguousarray(np.asarray(cdf_y, dtype=np.float64)).reshape(-1)
-    z = np.ascontiguousarray(np.asarray(cdf_z, dtype=np.float64)).reshape(-1)
+    x = np.ascontiguousarray(np.asarray(cdf_x, dtype=dtype)).reshape(-1)
+    y = np.ascontiguousarray(np.asarray(cdf_y, dtype=dtype)).reshape(-1)
+    z = np.ascontiguousarray(np.asarray(cdf_z, dtype=dtype)).reshape(-1)
     t1 = time.perf_counter_ns()
     return (x, y, z), (t1 - t0)
 
@@ -98,24 +102,29 @@ def main():
     p = argparse.ArgumentParser(
         description="Benchmark pybind11 conversion + C++ CDF copy costs"
     )
-    p.add_argument("file")
     p.add_argument("nx", type=int)
     p.add_argument("ny", type=int)
     p.add_argument("nz", type=int)
     p.add_argument("copies", type=int)
     p.add_argument("--repeats", type=int, default=5)
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=12345,
+        help="seed used to generate the random float32 image (default: 12345)",
+    )
     args = p.parse_args()
 
+    if min(args.nx, args.ny, args.nz, args.copies, args.repeats) <= 0:
+        p.error("nx, ny, nz, copies, and repeats must all be positive")
+
     expected = args.nx * args.ny * args.nz
-    raw = np.fromfile(args.file, dtype=np.float32)
-    if raw.size != expected:
-        raise SystemExit(
-            f"file has {raw.size} float32 values; expected {expected}"
-        )
-    image = raw.reshape(args.nz, args.ny, args.nx)
+    rng = np.random.default_rng(args.seed)
+    image = rng.random((args.nz, args.ny, args.nx), dtype=np.float32)
 
     print(f"image             : {args.nx} x {args.ny} x {args.nz}")
     print(f"voxels            : {expected:,}")
+    print(f"random seed       : {args.seed}")
     print(f"copies/run        : {args.copies}")
     print(f"repeats           : {args.repeats}\n")
 
@@ -124,17 +133,40 @@ def main():
     t1 = time.perf_counter_ns()
     print(f"Python CDF build  : {(t1-t0)/1e6:.3f} ms")
 
-    (flat_x, flat_y, flat_z), flatten_ns = to_flat_arrays(cdf_x, cdf_y, cdf_z)
-    print(f"CDF flatten once  : {flatten_ns/1e6:.3f} ms")
-    print(f"flat sizes        : X={flat_x.size:,}, Y={flat_y.size:,}, Z={flat_z.size:,}\n")
+    (flat_x, flat_y, flat_z), flatten_ns = to_flat_arrays(
+        cdf_x, cdf_y, cdf_z
+    )
+    (flat64_x, flat64_y, flat64_z), flatten64_ns = to_flat_arrays(
+        cdf_x, cdf_y, cdf_z, dtype=np.float64
+    )
+    print(f"CDF flatten once  : {flatten_ns/1e6:.3f} ms ({flat_x.dtype})")
+    print(f"CDF -> float64    : {flatten64_ns/1e6:.3f} ms (saved before benchmark)")
+    print(
+        f"flat sizes        : X={flat_x.size:,}, Y={flat_y.size:,}, "
+        f"Z={flat_z.size:,}\n"
+    )
 
     nested_args = (cdf_z, cdf_y, cdf_x)
     flat_args = (flat_z, flat_y, flat_x)
+    flat64_args = (flat64_z, flat64_y, flat64_x)
+    nested_numpy_args = (
+        flat_z.reshape(args.nz),
+        flat_y.reshape(args.nz, args.ny),
+        flat_x.reshape(args.nz, args.ny, args.nx),
+    )
+    nested_numpy64_args = (
+        flat64_z.reshape(args.nz),
+        flat64_y.reshape(args.nz, args.ny),
+        flat64_x.reshape(args.nz, args.ny, args.nx),
+    )
 
+    baseline_name = "flat NumPy (memcpy, saved float64)"
     modes = [
         ("nested STL caster", NestedCDFHolder, nested_args),
-        ("flat STL caster", FlatSTLHolder, flat_args),
-        ("flat NumPy", FlatNumpyHolder, flat_args),
+        ("NumPy -> VD/VD2/VD3 (float32)", NestedNumpyF32Holder, nested_numpy_args),
+        ("NumPy -> VD/VD2/VD3 (float64)", NestedNumpyF64Holder, nested_numpy64_args),
+        (f"flat NumPy ({flat_x.dtype} input)", FlatNumpyHolder, flat_args),
+        (baseline_name, FlatNumpyHolder, flat64_args),
     ]
 
     all_summaries = {}
@@ -154,16 +186,13 @@ def main():
         print(f"outside / setter  : {s['outside_per_setter_ms']:.3f} ms")
         print()
 
-    nested = all_summaries["nested STL caster"]["wall_mean"]
-    flat_stl = all_summaries["flat STL caster"]["wall_mean"]
-    flat_np = all_summaries["flat NumPy"]["wall_mean"]
-
-    print("=== Ratios (wall-clock) ===")
-    print(f"nested / flat STL : {nested/flat_stl:.3f}x")
-    print(f"nested / flat NumPy: {nested/flat_np:.3f}x")
-    print(f"flat STL / NumPy  : {flat_stl/flat_np:.3f}x")
+    baseline = all_summaries[baseline_name]["wall_mean"]
+    print(f"=== Ratios (wall-clock, baseline: {baseline_name}) ===")
+    label_width = max(len(name) for name, _, _ in modes)
+    for name, _, _ in modes:
+        wall_mean = all_summaries[name]["wall_mean"]
+        print(f"{name:<{label_width}} : {wall_mean / baseline:.3f}x")
 
 
 if __name__ == "__main__":
     main()
-
